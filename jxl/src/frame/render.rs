@@ -432,6 +432,13 @@ impl Frame {
 
         let output_color_info = OutputColorInfo::from_header(&decoder_state.file_header)?;
 
+        // If desired_intensity_target is set, use it for transfer function application.
+        // The XYB decode stage still uses the file's original intensity_target for correct
+        // decoding; tone mapping is applied as a separate pipeline stage to remap values.
+        let effective_intensity_target = decoder_state
+            .desired_intensity_target
+            .unwrap_or(output_color_info.intensity_target);
+
         // Determine output TF: use output profile's TF if available, else fall back to embedded profile's TF.
         // Note: output_color_info (luminances, opsin matrix) always comes from the embedded profile;
         // CMS handles any primaries conversion if the output profile differs.
@@ -440,11 +447,27 @@ impl Frame {
             .map(|tf| {
                 TransferFunction::from_api_tf(
                     tf,
-                    output_color_info.intensity_target,
+                    effective_intensity_target,
                     output_color_info.luminances,
                 )
             })
-            .unwrap_or_else(|| output_color_info.tf.clone());
+            .unwrap_or_else(|| {
+                // When desired_intensity_target differs, update the embedded TF too
+                if effective_intensity_target != output_color_info.intensity_target {
+                    match &output_color_info.tf {
+                        TransferFunction::Pq { .. } => TransferFunction::Pq {
+                            intensity_target: effective_intensity_target,
+                        },
+                        TransferFunction::Hlg { luminance_rgb, .. } => TransferFunction::Hlg {
+                            intensity_target: effective_intensity_target,
+                            luminance_rgb: *luminance_rgb,
+                        },
+                        other => other.clone(),
+                    }
+                } else {
+                    output_color_info.tf.clone()
+                }
+            });
 
         // Find the Black (K) extra channel if present.
         // In JXL, CMYK is stored as 3 color channels (CMY) + K as extra channel.
@@ -464,6 +487,35 @@ impl Frame {
             pipeline = pipeline.add_inplace_stage(YcbcrToRgbStage::new(0))?;
         } else if xyb_encoded {
             pipeline = pipeline.add_inplace_stage(XybStage::new(0, output_color_info.clone()))?;
+        }
+
+        // Insert tone mapping stage when desired_intensity_target differs from the file's
+        // intensity_target. For PQ content, uses BT.2408 tone mapping to remap the luminance
+        // range. For HLG content, re-applies the OOTF for the desired display luminance.
+        // After this stage, 1.0 corresponds to desired_intensity_target nits.
+        if xyb_encoded && effective_intensity_target != output_color_info.intensity_target {
+            let tone_mapping_stage = match &output_color_info.tf {
+                TransferFunction::Pq { .. } => {
+                    let tone_mapping = &decoder_state.file_header.image_metadata.tone_mapping;
+                    Some(ToneMappingStage::new_pq(
+                        0,
+                        output_color_info.intensity_target,
+                        effective_intensity_target,
+                        tone_mapping.min_nits,
+                        output_color_info.luminances,
+                    ))
+                }
+                TransferFunction::Hlg { .. } => Some(ToneMappingStage::new_hlg(
+                    0,
+                    output_color_info.intensity_target,
+                    effective_intensity_target,
+                    output_color_info.luminances,
+                )),
+                _ => None,
+            };
+            if let Some(stage) = tone_mapping_stage {
+                pipeline = pipeline.add_inplace_stage(stage)?;
+            }
         }
 
         // Insert CMS stage if profiles differ.
@@ -518,7 +570,7 @@ impl Frame {
                 max_pixels,
                 cms_input,
                 output_profile.clone(),
-                output_color_info.intensity_target,
+                effective_intensity_target,
             )?;
             // CMS cannot add channels - reject transforms that would
             if out_channels > in_channels {

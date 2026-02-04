@@ -124,6 +124,7 @@ pub struct DecoderState {
     pub nonvisible_frame_index: usize,
     pub high_precision: bool,
     pub premultiply_output: bool,
+    pub desired_intensity_target: Option<f32>,
 }
 
 impl DecoderState {
@@ -142,6 +143,7 @@ impl DecoderState {
             nonvisible_frame_index: 0,
             high_precision: false,
             premultiply_output: false,
+            desired_intensity_target: None,
         }
     }
 

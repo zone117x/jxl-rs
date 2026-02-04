@@ -99,7 +99,9 @@ impl CodestreamParser {
                     }),
                 uses_original_profile: !data.xyb_encoded,
                 tone_mapping: ToneMapping {
-                    intensity_target: data.tone_mapping.intensity_target,
+                    intensity_target: decode_options
+                        .desired_intensity_target
+                        .unwrap_or(data.tone_mapping.intensity_target),
                     min_nits: data.tone_mapping.min_nits,
                     relative_to_max_display: data.tone_mapping.relative_to_max_display,
                     linear_below: data.tone_mapping.linear_below,
@@ -198,6 +200,7 @@ impl CodestreamParser {
             decoder_state.render_spotcolors = decode_options.render_spot_colors;
             decoder_state.high_precision = decode_options.high_precision;
             decoder_state.premultiply_output = decode_options.premultiply_output;
+            decoder_state.desired_intensity_target = decode_options.desired_intensity_target;
             self.decoder_state = Some(decoder_state);
             // Reset bit offset to 0 since we've consumed everything up to a byte boundary
             self.non_section_bit_offset = 0;

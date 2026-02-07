@@ -260,6 +260,7 @@ impl Frame {
         cms: Option<&dyn JxlCms>,
         input_profile: &JxlColorProfile,
         output_profile: &JxlColorProfile,
+        desired_intensity_target: Option<f32>,
     ) -> Result<Box<T>> {
         let num_channels = frame_header.num_extra_channels as usize + 3;
         let num_temp_channels = if frame_header.has_noise() { 3 } else { 0 };
@@ -447,12 +448,12 @@ impl Frame {
             }
         }
 
-        let output_color_info = OutputColorInfo::from_header(&decoder_state.file_header)?;
+        let mut output_color_info = OutputColorInfo::from_header(&decoder_state.file_header)?;
 
         // Determine output TF: use output profile's TF if available, else fall back to embedded profile's TF.
         // Note: output_color_info (luminances, opsin matrix) always comes from the embedded profile;
         // CMS handles any primaries conversion if the output profile differs.
-        let output_tf = output_profile
+        let mut output_tf = output_profile
             .transfer_function()
             .map(|tf| {
                 TransferFunction::from_api_tf(
@@ -481,6 +482,34 @@ impl Frame {
             pipeline = pipeline.add_inplace_stage(YcbcrToRgbStage::new(0))?;
         } else if xyb_encoded {
             pipeline = pipeline.add_inplace_stage(XybStage::new(0, output_color_info.clone()))?;
+        }
+
+        // Insert tone mapping stage if HDR→SDR conversion is requested.
+        // Must come after XybStage (which produces linear RGB) and before CMS/FromLinear.
+        if let Some(desired_it) = desired_intensity_target {
+            let source_it = output_color_info.intensity_target;
+            if source_it > desired_it && desired_it > 0.0 {
+                pipeline = pipeline.add_inplace_stage(ToneMappingStage::new(
+                    0,
+                    source_it,
+                    desired_it,
+                    output_color_info.luminances,
+                ))?;
+                // After tone mapping, 1.0 linear = desired_intensity_target nits.
+                // Update output_color_info and output_tf so downstream stages use the new target.
+                output_color_info.intensity_target = desired_it;
+                // Recompute output_tf with updated intensity_target (matters for PQ/HLG output)
+                output_tf = output_profile
+                    .transfer_function()
+                    .map(|tf| {
+                        TransferFunction::from_api_tf(
+                            tf,
+                            output_color_info.intensity_target,
+                            output_color_info.luminances,
+                        )
+                    })
+                    .unwrap_or_else(|| output_color_info.tf.clone());
+            }
         }
 
         // Insert CMS stage if profiles differ.
@@ -713,6 +742,7 @@ impl Frame {
         cms: Option<&dyn JxlCms>,
         input_profile: &JxlColorProfile,
         output_profile: &JxlColorProfile,
+        desired_intensity_target: Option<f32>,
     ) -> Result<()> {
         let lf_global = self.lf_global.as_mut().unwrap();
         let epf_sigma = if self.header.restoration_filter.epf_iters > 0 {
@@ -732,6 +762,7 @@ impl Frame {
                 cms,
                 input_profile,
                 output_profile,
+                desired_intensity_target,
             )? as Box<dyn std::any::Any>
         } else {
             Self::build_render_pipeline::<LowMemoryRenderPipeline>(
@@ -743,6 +774,7 @@ impl Frame {
                 cms,
                 input_profile,
                 output_profile,
+                desired_intensity_target,
             )? as Box<dyn std::any::Any>
         };
         #[cfg(not(test))]
@@ -755,6 +787,7 @@ impl Frame {
             cms,
             input_profile,
             output_profile,
+            desired_intensity_target,
         )?;
         self.render_pipeline = Some(render_pipeline);
         self.lf_global_was_rendered = false;

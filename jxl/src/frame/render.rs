@@ -449,12 +449,12 @@ impl Frame {
             }
         }
 
-        let mut output_color_info = OutputColorInfo::from_header(&decoder_state.file_header)?;
+        let output_color_info = OutputColorInfo::from_header(&decoder_state.file_header)?;
 
         // Determine output TF: use output profile's TF if available, else fall back to embedded profile's TF.
         // Note: output_color_info (luminances, opsin matrix) always comes from the embedded profile;
         // CMS handles any primaries conversion if the output profile differs.
-        let mut output_tf = output_profile
+        let output_tf = output_profile
             .transfer_function()
             .map(|tf| {
                 TransferFunction::from_api_tf(
@@ -500,20 +500,9 @@ impl Frame {
                     output_color_info.luminances,
                     tone_mapping_opts.method,
                 ))?;
-                // After tone mapping, 1.0 linear = desired_intensity_target nits.
-                // Update output_color_info and output_tf so downstream stages use the new target.
-                output_color_info.intensity_target = desired_it;
-                // Recompute output_tf with updated intensity_target (matters for PQ/HLG output)
-                output_tf = output_profile
-                    .transfer_function()
-                    .map(|tf| {
-                        TransferFunction::from_api_tf(
-                            tf,
-                            output_color_info.intensity_target,
-                            output_color_info.luminances,
-                        )
-                    })
-                    .unwrap_or_else(|| output_color_info.tf.clone());
+                // Tone mapping is scene-referred: output 1.0 still = source_intensity_target nits.
+                // The bt2446a curve redistributes perceptual contrast but preserves [0,1] normalization.
+                // intensity_target and output_tf remain unchanged.
             }
         }
 

@@ -7,17 +7,17 @@ mod bt2446a;
 mod bt2446a_linear;
 mod bt2446a_perceptual;
 mod common;
-mod reinhard;
 
 use crate::api::JxlToneMappingMethod;
 use crate::render::RenderPipelineInPlaceStage;
 
 /// Tone maps HDR linear RGB to a lower intensity target.
 ///
-/// Input: planar f32 linear RGB where 1.0 = `source_intensity_target` nits.
-/// Output: planar f32 linear RGB where 1.0 = `desired_intensity_target` nits.
+/// Input/output: planar f32 linear RGB where 1.0 = `source_intensity_target` nits.
+/// The tone curve redistributes perceptual contrast for SDR viewing while
+/// preserving the scene-referred normalization (1.0 = source peak).
 ///
-/// The method field selects between different tone mapping algorithms.
+/// The method field selects between different BT.2446a tone mapping algorithms.
 /// All methods preserve RGB channel ratios (hue/saturation) by scaling
 /// channels uniformly based on a luminance compression ratio.
 #[derive(Debug)]
@@ -28,7 +28,6 @@ pub struct ToneMappingStage {
     desired_intensity_target: f32,
     luminances: [f32; 3],
     bt2446a: common::Bt2446aParams,
-    reinhard: reinhard::ReinhardParams,
 }
 
 impl ToneMappingStage {
@@ -40,8 +39,6 @@ impl ToneMappingStage {
         method: JxlToneMappingMethod,
     ) -> Self {
         let bt2446a = common::Bt2446aParams::new(source_intensity_target, desired_intensity_target);
-        let reinhard =
-            reinhard::ReinhardParams::new(source_intensity_target, desired_intensity_target);
 
         Self {
             first_channel,
@@ -50,7 +47,6 @@ impl ToneMappingStage {
             desired_intensity_target,
             luminances,
             bt2446a,
-            reinhard,
         }
     }
 }
@@ -97,9 +93,6 @@ impl RenderPipelineInPlaceStage for ToneMappingStage {
             }
             JxlToneMappingMethod::Bt2446a => {
                 bt2446a::process_row(self, xsize, row_r, row_g, row_b);
-            }
-            JxlToneMappingMethod::Reinhard => {
-                reinhard::process_row(self, xsize, row_r, row_g, row_b);
             }
             JxlToneMappingMethod::Bt2446aPerceptual => {
                 bt2446a_perceptual::process_row(self, xsize, row_r, row_g, row_b);

@@ -11,8 +11,6 @@ pub const DEFAULT_SDR_INTENSITY_TARGET: f32 = 203.0;
 /// Tone mapping algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JxlToneMappingMethod {
-    /// Reinhard-style curve in PQ domain. Preserves SDR content exactly at the knee.
-    Reinhard,
     /// BT.2446 Method A in Y'CbCr' domain per ITU-R BT.2446-1 specification.
     /// Gamma-encodes, converts to YCbCr, applies curve to Y', scales CbCr, converts back.
     Bt2446a,

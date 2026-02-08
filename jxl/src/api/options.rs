@@ -5,6 +5,36 @@
 
 use crate::api::JxlCms;
 
+/// Standard SDR reference white per ITU-R BT.2408 (cd/m² / nits).
+pub const DEFAULT_SDR_INTENSITY_TARGET: f32 = 203.0;
+
+/// Tone mapping algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JxlToneMappingMethod {
+    /// Reinhard-style curve in PQ domain. Preserves SDR content exactly at the knee.
+    Reinhard,
+    /// BT.2446 Method A in Y'CbCr' domain per ITU-R BT.2446-1 specification.
+    /// Gamma-encodes, converts to YCbCr, applies curve to Y', scales CbCr, converts back.
+    Bt2446a,
+    /// BT.2446a curve applied to linear RGB luminance. Fast approximation —
+    /// same curve but luminance is computed in linear domain instead of Y'CbCr'.
+    Bt2446aLinear,
+    /// BT.2446a curve in IPTPQc4 perceptual space (libplacebo-style).
+    /// Best color preservation for saturated HDR content. Most expensive.
+    #[default]
+    Bt2446aPerceptual,
+}
+
+/// Options for HDR→SDR tone mapping.
+#[derive(Debug, Clone, Copy)]
+pub struct JxlToneMappingOptions {
+    /// Target display luminance in cd/m² (nits).
+    /// `None` defaults to 203 cd/m² ([`DEFAULT_SDR_INTENSITY_TARGET`]).
+    pub desired_intensity_target: Option<f32>,
+    /// Tone mapping algorithm to use.
+    pub method: JxlToneMappingMethod,
+}
+
 /// Default maximum aggregate size for EXIF metadata (1MB).
 /// Typical EXIF data is 10-64KB.
 pub const DEFAULT_EXIF_SIZE_LIMIT: u64 = 1024 * 1024;
@@ -88,7 +118,8 @@ pub struct JxlDecoderOptions {
     pub adjust_orientation: bool,
     pub render_spot_colors: bool,
     pub coalescing: bool,
-    pub desired_intensity_target: Option<f32>,
+    /// HDR→SDR tone mapping options. `None` disables tone mapping (default).
+    pub tone_mapping: Option<JxlToneMappingOptions>,
     pub skip_preview: bool,
     pub progressive_mode: JxlProgressiveMode,
     pub cms: Option<Box<dyn JxlCms>>,
@@ -119,7 +150,7 @@ impl Default for JxlDecoderOptions {
             render_spot_colors: true,
             coalescing: true,
             skip_preview: true,
-            desired_intensity_target: None,
+            tone_mapping: None,
             progressive_mode: JxlProgressiveMode::Pass,
             cms: None,
             pixel_limit: None,

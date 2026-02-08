@@ -6,6 +6,7 @@
 use crate::api::JxlCms;
 use crate::api::JxlColorEncoding;
 use crate::api::JxlColorProfile;
+use crate::api::{JxlToneMappingOptions, DEFAULT_SDR_INTENSITY_TARGET};
 use crate::api::JxlColorType;
 use crate::api::JxlDataFormat;
 use crate::api::JxlOutputBuffer;
@@ -260,7 +261,7 @@ impl Frame {
         cms: Option<&dyn JxlCms>,
         input_profile: &JxlColorProfile,
         output_profile: &JxlColorProfile,
-        desired_intensity_target: Option<f32>,
+        tone_mapping: Option<JxlToneMappingOptions>,
     ) -> Result<Box<T>> {
         let num_channels = frame_header.num_extra_channels as usize + 3;
         let num_temp_channels = if frame_header.has_noise() { 3 } else { 0 };
@@ -486,7 +487,10 @@ impl Frame {
 
         // Insert tone mapping stage if HDR→SDR conversion is requested.
         // Must come after XybStage (which produces linear RGB) and before CMS/FromLinear.
-        if let Some(desired_it) = desired_intensity_target {
+        if let Some(ref tone_mapping_opts) = tone_mapping {
+            let desired_it = tone_mapping_opts
+                .desired_intensity_target
+                .unwrap_or(DEFAULT_SDR_INTENSITY_TARGET);
             let source_it = output_color_info.intensity_target;
             if source_it > desired_it && desired_it > 0.0 {
                 pipeline = pipeline.add_inplace_stage(ToneMappingStage::new(
@@ -494,6 +498,7 @@ impl Frame {
                     source_it,
                     desired_it,
                     output_color_info.luminances,
+                    tone_mapping_opts.method,
                 ))?;
                 // After tone mapping, 1.0 linear = desired_intensity_target nits.
                 // Update output_color_info and output_tf so downstream stages use the new target.
@@ -742,7 +747,7 @@ impl Frame {
         cms: Option<&dyn JxlCms>,
         input_profile: &JxlColorProfile,
         output_profile: &JxlColorProfile,
-        desired_intensity_target: Option<f32>,
+        tone_mapping: Option<JxlToneMappingOptions>,
     ) -> Result<()> {
         let lf_global = self.lf_global.as_mut().unwrap();
         let epf_sigma = if self.header.restoration_filter.epf_iters > 0 {
@@ -762,7 +767,7 @@ impl Frame {
                 cms,
                 input_profile,
                 output_profile,
-                desired_intensity_target,
+                tone_mapping,
             )? as Box<dyn std::any::Any>
         } else {
             Self::build_render_pipeline::<LowMemoryRenderPipeline>(
@@ -774,7 +779,7 @@ impl Frame {
                 cms,
                 input_profile,
                 output_profile,
-                desired_intensity_target,
+                tone_mapping,
             )? as Box<dyn std::any::Any>
         };
         #[cfg(not(test))]
@@ -787,7 +792,7 @@ impl Frame {
             cms,
             input_profile,
             output_profile,
-            desired_intensity_target,
+            tone_mapping,
         )?;
         self.render_pipeline = Some(render_pipeline);
         self.lf_global_was_rendered = false;

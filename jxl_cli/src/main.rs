@@ -172,6 +172,7 @@ fn main() -> Result<()> {
                 output_format.is_none_or(|x| x.should_fold_alpha()),
                 linear_output,
                 opt.allow_partial_files,
+                None,
             )?;
             if opt.preview {
                 output.frames.truncate(1);

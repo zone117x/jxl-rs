@@ -5,6 +5,53 @@
 
 use crate::api::JxlCms;
 
+/// Standard SDR reference white per ITU-R BT.2408 (cd/m² / nits).
+pub const DEFAULT_SDR_INTENSITY_TARGET: f32 = 203.0;
+
+/// Tone mapping algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JxlToneMappingMethod {
+    /// BT.2446a in Y'CbCr' domain per ITU-R BT.2446-1.
+    /// Gamma-encodes, converts to YCbCr, applies curve to Y', scales CbCr, converts back.
+    Bt2446a,
+    /// BT.2446a curve applied to linear RGB luminance. Fast approximation —
+    /// same curve but luminance is computed in linear domain instead of Y'CbCr'.
+    Bt2446aLinear,
+    /// BT.2446a curve in IPTPQc4 perceptual space (libplacebo-style).
+    /// Best color preservation for saturated HDR content.
+    #[default]
+    Bt2446aPerceptual,
+    /// Rec. 2408 / BT.2390-style tone mapping matching libjxl's Rec2408ToneMapperBase.
+    /// Operates in PQ domain with Hermite spline knee, followed by gamut mapping.
+    /// Output is re-normalized so 1.0 = target peak (unlike BT.2446a variants).
+    Rec2408,
+}
+
+impl JxlToneMappingMethod {
+    /// Returns the default target display luminance (nits) for this method.
+    ///
+    /// - `Rec2408`: 255 nits, matching libjxl's render pipeline default.
+    /// - BT.2446a variants: 203 nits (ITU-R BT.2408 SDR reference white).
+    pub fn default_intensity_target(self) -> f32 {
+        match self {
+            Self::Rec2408 => 255.0,
+            Self::Bt2446a | Self::Bt2446aLinear | Self::Bt2446aPerceptual => {
+                DEFAULT_SDR_INTENSITY_TARGET
+            }
+        }
+    }
+}
+
+/// Options for HDR→SDR tone mapping.
+#[derive(Debug, Clone, Copy)]
+pub struct JxlToneMappingOptions {
+    /// Target display luminance in cd/m² (nits).
+    /// `None` defaults per method via [`JxlToneMappingMethod::default_intensity_target`].
+    pub desired_intensity_target: Option<f32>,
+    /// Tone mapping algorithm to use.
+    pub method: JxlToneMappingMethod,
+}
+
 pub enum JxlProgressiveMode {
     /// Renders all pixels in every call to Process.
     Eager,
@@ -19,7 +66,8 @@ pub struct JxlDecoderOptions {
     pub adjust_orientation: bool,
     pub render_spot_colors: bool,
     pub coalescing: bool,
-    pub desired_intensity_target: Option<f32>,
+    /// HDR→SDR tone mapping options. `None` disables tone mapping (default).
+    pub tone_mapping: Option<JxlToneMappingOptions>,
     pub skip_preview: bool,
     pub progressive_mode: JxlProgressiveMode,
     pub cms: Option<Box<dyn JxlCms>>,
@@ -48,7 +96,7 @@ impl Default for JxlDecoderOptions {
             render_spot_colors: true,
             coalescing: true,
             skip_preview: true,
-            desired_intensity_target: None,
+            tone_mapping: None,
             progressive_mode: JxlProgressiveMode::Pass,
             cms: None,
             pixel_limit: None,

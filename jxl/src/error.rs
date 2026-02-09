@@ -289,6 +289,10 @@ pub enum Error {
     },
     #[error("CMS error: {0}")]
     CmsError(String),
+    #[error(
+        "Bt2446aPerceptual tone mapping requires BT.2020/BT.2100 primaries, but the input profile uses {0}. Use Bt2446a or Bt2446aLinear instead."
+    )]
+    ToneMappingRequiresBt2020(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

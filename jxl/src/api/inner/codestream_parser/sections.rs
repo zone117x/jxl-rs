@@ -94,6 +94,7 @@ impl CodestreamParser {
                     self.output_color_profile
                         .as_ref()
                         .expect("output_color_profile should be set before pipeline preparation"),
+                    decode_options.tone_mapping,
                 )?;
                 frame.finalize_lf()?;
                 frame.decode_and_render_hf_groups(
@@ -138,6 +139,7 @@ impl CodestreamParser {
                         self.output_color_profile.as_ref().expect(
                             "output_color_profile should be set before pipeline preparation",
                         ),
+                        decode_options.tone_mapping,
                     )?;
                     frame.finalize_lf()?;
                     self.section_state.hf_global_done = true;

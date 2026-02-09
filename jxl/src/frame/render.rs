@@ -9,6 +9,7 @@ use crate::api::JxlColorProfile;
 use crate::api::JxlColorType;
 use crate::api::JxlDataFormat;
 use crate::api::JxlOutputBuffer;
+use crate::api::{JxlToneMappingMethod, JxlToneMappingOptions};
 use crate::bit_reader::BitReader;
 use crate::error::{Error, Result};
 use crate::features::epf::SigmaSource;
@@ -260,6 +261,7 @@ impl Frame {
         cms: Option<&dyn JxlCms>,
         input_profile: &JxlColorProfile,
         output_profile: &JxlColorProfile,
+        tone_mapping: Option<JxlToneMappingOptions>,
     ) -> Result<Box<T>> {
         let num_channels = frame_header.num_extra_channels as usize + 3;
         let num_temp_channels = if frame_header.has_noise() { 3 } else { 0 };
@@ -447,12 +449,12 @@ impl Frame {
             }
         }
 
-        let output_color_info = OutputColorInfo::from_header(&decoder_state.file_header)?;
+        let mut output_color_info = OutputColorInfo::from_header(&decoder_state.file_header)?;
 
         // Determine output TF: use output profile's TF if available, else fall back to embedded profile's TF.
         // Note: output_color_info (luminances, opsin matrix) always comes from the embedded profile;
         // CMS handles any primaries conversion if the output profile differs.
-        let output_tf = output_profile
+        let mut output_tf = output_profile
             .transfer_function()
             .map(|tf| {
                 TransferFunction::from_api_tf(
@@ -481,6 +483,60 @@ impl Frame {
             pipeline = pipeline.add_inplace_stage(YcbcrToRgbStage::new(0))?;
         } else if xyb_encoded {
             pipeline = pipeline.add_inplace_stage(XybStage::new(0, output_color_info.clone()))?;
+        }
+
+        // Insert tone mapping stage if HDR→SDR conversion is requested.
+        // Must come after XybStage (which produces linear RGB) and before CMS/FromLinear.
+        if let Some(ref tone_mapping_opts) = tone_mapping {
+            let desired_it = tone_mapping_opts
+                .desired_intensity_target
+                .unwrap_or_else(|| tone_mapping_opts.method.default_intensity_target());
+            let source_it = output_color_info.intensity_target;
+            if source_it > desired_it && desired_it > 0.0 {
+                // Bt2446aPerceptual uses hardcoded BT.2020 matrices (IPTPQc4);
+                // reject if we can't confirm BT.2020/BT.2100 primaries.
+                if tone_mapping_opts.method == JxlToneMappingMethod::Bt2446aPerceptual {
+                    let is_bt2020 = matches!(
+                        input_profile,
+                        JxlColorProfile::Simple(JxlColorEncoding::RgbColorSpace {
+                            primaries: crate::api::JxlPrimaries::BT2100,
+                            ..
+                        })
+                    );
+                    if !is_bt2020 {
+                        let desc = match input_profile {
+                            JxlColorProfile::Icc(_) => "an ICC profile".to_string(),
+                            JxlColorProfile::Simple(enc) => format!("{enc}"),
+                        };
+                        return Err(Error::ToneMappingRequiresBt2020(desc));
+                    }
+                }
+                pipeline = pipeline.add_inplace_stage(ToneMappingStage::new(
+                    0,
+                    source_it,
+                    desired_it,
+                    output_color_info.luminances,
+                    tone_mapping_opts.method,
+                ))?;
+                if tone_mapping_opts.method == JxlToneMappingMethod::Rec2408 {
+                    // Rec2408 re-normalizes output so 1.0 = target peak.
+                    // Update intensity_target for downstream stages (FromLinear, CMS).
+                    output_color_info.intensity_target = desired_it;
+                    // Also update output_tf if it embeds intensity_target (PQ/HLG).
+                    match &mut output_tf {
+                        TransferFunction::Pq { intensity_target } => {
+                            *intensity_target = desired_it;
+                        }
+                        TransferFunction::Hlg {
+                            intensity_target, ..
+                        } => {
+                            *intensity_target = desired_it;
+                        }
+                        _ => {}
+                    }
+                }
+                // BT.2446a variants: output 1.0 still = source peak, no change needed.
+            }
         }
 
         // Insert CMS stage if profiles differ.
@@ -713,6 +769,7 @@ impl Frame {
         cms: Option<&dyn JxlCms>,
         input_profile: &JxlColorProfile,
         output_profile: &JxlColorProfile,
+        tone_mapping: Option<JxlToneMappingOptions>,
     ) -> Result<()> {
         let lf_global = self.lf_global.as_mut().unwrap();
         let epf_sigma = if self.header.restoration_filter.epf_iters > 0 {
@@ -732,6 +789,7 @@ impl Frame {
                 cms,
                 input_profile,
                 output_profile,
+                tone_mapping,
             )? as Box<dyn std::any::Any>
         } else {
             Self::build_render_pipeline::<LowMemoryRenderPipeline>(
@@ -743,6 +801,7 @@ impl Frame {
                 cms,
                 input_profile,
                 output_profile,
+                tone_mapping,
             )? as Box<dyn std::any::Any>
         };
         #[cfg(not(test))]
@@ -755,6 +814,7 @@ impl Frame {
             cms,
             input_profile,
             output_profile,
+            tone_mapping,
         )?;
         self.render_pipeline = Some(render_pipeline);
         self.lf_global_was_rendered = false;

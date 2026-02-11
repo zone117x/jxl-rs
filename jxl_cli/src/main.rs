@@ -5,7 +5,10 @@
 
 use clap::Parser;
 use color_eyre::eyre::{Result, WrapErr, eyre};
-use jxl::api::{JxlDecoderOptions, JxlMetadataBox, JxlMetadataCaptureOptions, ProcessingResult};
+use jxl::api::{
+    JxlColorEncoding, JxlColorProfile, JxlDecoderOptions, JxlMetadataBox,
+    JxlMetadataCaptureOptions, ProcessingResult,
+};
 use jxl_cli::dec::OutputDataType;
 use jxl_cli::enc::OutputFormat;
 use jxl_cli::metadata::{compress_metadata_boxes, print_metadata_info, save_metadata_boxes};
@@ -14,6 +17,9 @@ use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::PathBuf;
 use std::time::Duration;
+
+#[cfg(feature = "tone-mapping")]
+use jxl_cli::{cms::ToneMappingLcms2Cms, tone_mapping::ToneMapMethod};
 
 const VERSION_STRING: &str = concat!(
     env!("VERGEN_GIT_DESCRIBE"),
@@ -102,6 +108,12 @@ struct Opt {
     /// Brotli-compress metadata boxes (Exif, XMP, JUMBF) and write to output path
     #[clap(long)]
     compress_metadata: Option<PathBuf>,
+
+    /// Tone-map HDR to SDR. Accepts a method: bt2446a (spec-compliant Y'CbCr),
+    /// bt2446a-linear (fast), bt2446a-perceptual (best quality), rec2408 (libjxl-style).
+    #[cfg(feature = "tone-mapping")]
+    #[clap(long, value_name = "METHOD")]
+    tone_map: Option<ToneMapMethod>,
 }
 
 fn save_icc(icc_bytes: &[u8], icc_filename: Option<&PathBuf>) -> Result<()> {
@@ -170,13 +182,33 @@ fn main() -> Result<()> {
         capture_jumbf: wants_metadata || opt.jumbf_out.is_some(),
         ..JxlMetadataCaptureOptions::capture_all()
     };
+    #[cfg(feature = "tone-mapping")]
+    let tone_map_method = opt.tone_map;
     let options = |skip_preview: bool| {
         let mut options = JxlDecoderOptions::default();
         options.render_spot_colors = !matches!(output_format, Some(OutputFormat::Npy));
         options.skip_preview = skip_preview;
         options.high_precision = high_precision;
-        options.cms = Some(Box::new(Lcms2Cms));
         options.metadata_capture = metadata_capture.clone();
+
+        #[cfg(feature = "tone-mapping")]
+        if let Some(method) = tone_map_method {
+            if method == ToneMapMethod::CmsOnly {
+                options.cms = Some(Box::new(Lcms2Cms));
+                options.cms = Some(Box::new(ToneMappingLcms2Cms {
+                    desired_intensity_target: method.default_intensity_target(),
+                    method,
+                }));
+            }
+        } else {
+            options.cms = Some(Box::new(Lcms2Cms));
+        }
+
+        #[cfg(not(feature = "tone-mapping"))]
+        {
+            options.cms = Some(Box::new(Lcms2Cms));
+        }
+
         options
     };
 
@@ -264,9 +296,32 @@ fn main() -> Result<()> {
         file.seek(std::io::SeekFrom::Start(0))?;
     }
 
+    // When tone mapping, force sRGB output so the CMS stage is activated.
+    #[cfg(feature = "tone-mapping")]
+    let output_color_profile = if tone_map_method.is_some() {
+        Some(JxlColorProfile::Simple(JxlColorEncoding::srgb(false)))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "tone-mapping"))]
+    let output_color_profile: Option<JxlColorProfile> = None;
+
     let mut duration_sum = Duration::new(0, 0);
     // When extracting preview, don't skip it; otherwise skip preview by default
     let skip_preview = !opt.preview;
+
+    // Tone-mapped SDR output should default to 8-bit (unless user overrides).
+    #[cfg(feature = "tone-mapping")]
+    let override_bitdepth = if tone_map_method.is_some()
+        && opt.override_bitdepth.is_none()
+        && opt.data_type.is_none()
+    {
+        Some(8)
+    } else {
+        opt.override_bitdepth
+    };
+    #[cfg(not(feature = "tone-mapping"))]
+    let override_bitdepth = opt.override_bitdepth;
 
     macro_rules! run_decoder {
         ($input: expr) => {{
@@ -277,7 +332,7 @@ fn main() -> Result<()> {
             let (mut output, duration) = dec::decode_frames(
                 $input,
                 options(skip_preview),
-                opt.override_bitdepth,
+                override_bitdepth,
                 opt.data_type,
                 output_format
                     .map(|x| x.supported_output_data_types())
@@ -286,6 +341,7 @@ fn main() -> Result<()> {
                 linear_output,
                 opt.render_interval,
                 opt.allow_partial_files,
+                output_color_profile.clone(),
             )?;
             if opt.preview {
                 output.frames.truncate(1);

@@ -139,6 +139,7 @@ pub fn decode_frames<In: JxlBitstreamInputExt>(
     linear_output: bool,
     render_interval: Option<usize>,
     allow_partial_files: bool,
+    output_color_profile: Option<JxlColorProfile>,
 ) -> Result<(DecodeOutput, Duration)> {
     let start = Instant::now();
 
@@ -196,8 +197,10 @@ pub fn decode_frames<In: JxlBitstreamInputExt>(
     };
     decoder_with_image_info.set_pixel_format(new_format);
 
-    // If linear output is requested, modify the output profile
-    if linear_output
+    // Apply explicit output color profile, or modify for linear output.
+    if let Some(profile) = output_color_profile {
+        decoder_with_image_info.set_output_color_profile(profile)?;
+    } else if linear_output
         && let JxlColorProfile::Simple(enc) = decoder_with_image_info.output_color_profile().clone()
     {
         decoder_with_image_info

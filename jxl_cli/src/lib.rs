@@ -6,6 +6,8 @@
 pub mod cms;
 pub mod dec;
 pub mod enc;
+#[cfg(feature = "tone-mapping")]
+pub mod tone_mapping;
 
 #[cfg(test)]
 mod tests {
@@ -78,6 +80,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .unwrap()
         .0
@@ -189,6 +192,7 @@ mod tests {
                 false,
                 None,
                 false,
+                None,
             )
             .unwrap();
         }
